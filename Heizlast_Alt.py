@@ -2,328 +2,291 @@ import math
 import streamlit as st
 
 
-def calculate_heating_demand(volume, heat_loss_factor, delta_t):
-    """Berechnet die Heizlast basierend auf dem Gebäudevolumen,
-    Wärmeverlustfaktor und Temperaturdifferenz.
-
-    Parameter:
-    volume (float): Gebäudevolumen in m³
-    heat_loss_factor (float): Wärmeverlustfaktor in W/(m³·K)
-    delta_t (float): Temperaturdifferenz in °C
+def calculate_heating_demand(volume_m3: float, heat_loss_factor_W_per_m3K: float, delta_t_K: float) -> float:
+    """
+    Einfache Überschlagsrechnung:
+        Q = V * H * ΔT
 
     Returns:
-    float: Heizlast in kW
+        Heizlast in kW
     """
-    return volume * heat_loss_factor * delta_t / 1000
+    return volume_m3 * heat_loss_factor_W_per_m3K * delta_t_K / 1000.0
 
-def calculate_heating_demand_detailed(length_a, length_b, room_height, number_of_floors,
-                                      roof_pitch, first_achse, u_wand, u_roof, u_floor,
-                                      infiltration_factor, delta_t, u_window, area_window):
+
+def _geometry(length_a_m: float,
+              length_b_m: float,
+              room_height_m: float,
+              floors: int,
+              roof_pitch_deg: float,
+              ridge_axis: str,
+              window_area_m2: float) -> dict:
     """
-    Berechnet den Wärmeverlust für ein Gebäude mit Satteldach.
-
-    Parameters:
-    length_a (float): Länge A
-    length_b (float): Länge B
-    room_height (float): Raumhöhe
-    number_of_floors (int): Anzahl der Stockwerke
-    roof_pitch (float): Dachneigung in Grad
-    first_achse (str): Welche Achse ist die Firstachse? "A" oder "B"
-    u_wand (float): U-Wert der Wand
-    u_roof (float): U-Wert des Dachs
-    u_floor (float): U-Wert des Bodens
-    infiltration_factor (float): Infiltrationsfaktor
-    delta_t (float): Temperaturdifferenz
-
-    Returns:
-    float: Gesamtwärmeverlust
+    Geometrie für rechteckigen Grundriss mit Satteldach.
     """
-    # Berechne die Grundfläche
-    grundflaeche = length_a * length_b * number_of_floors
+    floor_area_single = length_a_m * length_b_m
+    gross_floor_area = floor_area_single * floors
+    volume = floor_area_single * room_height_m * floors
 
-    # Berechne die Dachfläche mit dem Dachwinkel
-    if first_achse == "A":
-        dach_flaeche = (length_b / math.cos(math.radians(roof_pitch))) * length_a
-    else:  # "B"
-        dach_flaeche = (length_a / math.cos(math.radians(roof_pitch))) * length_b
+    # vereinfachte Dachfläche (wie im Original): geneigte Fläche als Projektion / cos(pitch)
+    pitch_rad = math.radians(roof_pitch_deg)
+    cos_pitch = max(math.cos(pitch_rad), 1e-6)
+    if ridge_axis == "A":
+        roof_area = (length_b_m / cos_pitch) * length_a_m
+    else:
+        roof_area = (length_a_m / cos_pitch) * length_b_m
 
-    # Berechne die Wandfläche (ohne Dachanteile)
-    wandflaeche = (length_a + length_b) * room_height * number_of_floors - area_window
+    wall_area_gross = (length_a_m + length_b_m) * room_height_m * floors
+    wall_area_net = max(wall_area_gross - window_area_m2, 0.0)
 
-    # Berechne die Heizlast
-    heat_loss_wand = u_wand * wandflaeche * delta_t/1000.
-    heat_loss_roof = u_roof * dach_flaeche * delta_t/1000.
-    heat_loss_floor = u_floor * grundflaeche * delta_t /number_of_floors/1000./number_of_floors
-    heat_loss_window = u_window * area_window * delta_t/1000.
-    heat_loss_infiltration = infiltration_factor * delta_t * grundflaeche/1000.
-
-    heat_loss_hull = heat_loss_wand + heat_loss_roof + heat_loss_floor + heat_loss_window
-    total_heat_loss = heat_loss_hull + heat_loss_infiltration
-
-    return total_heat_loss, heat_loss_infiltration, heat_loss_hull, {
-        "Grundfläche": grundflaeche,
-        "Dachfläche": dach_flaeche,
-        "Wandfläche": wandflaeche
+    return {
+        "floor_area_single": floor_area_single,
+        "gross_floor_area": gross_floor_area,
+        "volume": volume,
+        "roof_area": roof_area,
+        "wall_area_gross": wall_area_gross,
+        "wall_area_net": wall_area_net,
+        "window_area": window_area_m2,
     }
 
 
-# Hauptanwendung
+def calculate_heating_demand_detailed(length_a_m: float,
+                                     length_b_m: float,
+                                     room_height_m: float,
+                                     floors: int,
+                                     roof_pitch_deg: float,
+                                     ridge_axis: str,
+                                     u_wall_W_m2K: float,
+                                     u_roof_W_m2K: float,
+                                     u_floor_W_m2K: float,
+                                     infiltration_W_m3K: float,
+                                     delta_t_K: float,
+                                     u_window_W_m2K: float,
+                                     window_area_m2: float):
+    """
+    Detaillierte Heizlast:
+      - Transmission über Wand/Dach/Boden/Fenster (U*A*ΔT)
+      - Infiltration als volumetrischer Faktor (H_v * V * ΔT)
+
+    Returns:
+      total_kW, infiltration_kW, hull_kW, parts_kW_dict, geom_dict
+    """
+    geom = _geometry(length_a_m, length_b_m, room_height_m, floors, roof_pitch_deg, ridge_axis, window_area_m2)
+
+    q_wall_kW = u_wall_W_m2K * geom["wall_area_net"] * delta_t_K / 1000.0
+    q_roof_kW = u_roof_W_m2K * geom["roof_area"] * delta_t_K / 1000.0
+
+    # Bodenplatte typischerweise nur EG-Grundfläche (nicht *floors)
+    q_floor_kW = u_floor_W_m2K * geom["floor_area_single"] * delta_t_K / 1000.0
+
+    q_window_kW = u_window_W_m2K * geom["window_area"] * delta_t_K / 1000.0
+
+    q_hull_kW = q_wall_kW + q_roof_kW + q_floor_kW + q_window_kW
+    q_infil_kW = infiltration_W_m3K * geom["volume"] * delta_t_K / 1000.0
+
+    parts = {
+        "Wand": q_wall_kW,
+        "Dach": q_roof_kW,
+        "Boden": q_floor_kW,
+        "Fenster": q_window_kW,
+        "Infiltration": q_infil_kW,
+    }
+
+    return q_hull_kW + q_infil_kW, q_infil_kW, q_hull_kW, parts, geom
+
+
+def _preset_defaults(preset: str) -> dict:
+    """
+    Sehr grobe Default-Werte (als Startpunkt) – Nutzer kann immer nachjustieren.
+    """
+    presets = {
+        "Altbau": dict(u_wall=1.6, u_roof=1.2, u_floor=1.0, u_window=4.8, infil=0.20),
+        "Teilsaniert": dict(u_wall=0.8, u_roof=0.6, u_floor=0.5, u_window=1.6, infil=0.08),
+        "Neubau": dict(u_wall=0.25, u_roof=0.20, u_floor=0.25, u_window=1.0, infil=0.04),
+        "Passivhaus": dict(u_wall=0.12, u_roof=0.10, u_floor=0.12, u_window=0.75, infil=0.02),
+    }
+    return presets.get(preset, presets["Teilsaniert"])
+
+
 def main():
-    # Titel der App
-    st.title("Heizlastberechnung für Gebäude")
+    st.set_page_config(page_title="Heizlastberechnung", page_icon="🔥", layout="wide")
+    st.title("🔥 Heizlastberechnung")
 
-    # Tabs für die verschiedenen Berechnungsmethoden
-    tab1, tab2 = st.tabs(["Detaillierte Berechnung", "Einfache Erfahrungsberechnung"])
+    tab1, tab2 = st.tabs(["Detaillierte Berechnung", "Einfache Überschlagung (Volumen)"])
 
+    # -----------------------------
+    # TAB 1: Detailliert
+    # -----------------------------
     with tab1:
-        st.header("Detaillierte Heizlastberechnung")
-        st.write("Berechnung basierend auf U-Werten und Flächen")
+        st.subheader("Detaillierte Heizlastberechnung (U·A·ΔT + Infiltration)")
 
-        # Detaillierte Berechnung mit Formular
-        with st.form(key='detailed_form'):
-            col1 = st.columns(1)[0]
+        # Sidebar-ähnliche Eingabe links, Ergebnis rechts
+        left, right = st.columns([1.05, 1.4], gap="large")
 
-            col1.write("Raumdimensionen:")
-            length_a = col1.slider("Länge A (m)", 2.0, 20.0, 10.0)
-            length_b = col1.slider("Länge B (m)", 2.0, 20.0, 5.0)
-            room_height = col1.slider("Raumhöhe (m)", 2.0, 10.0, 3.0)
-            number_of_floors = col1.slider("Zahl der Stockwerke", 2, 10, 1)
-            area_window = col1.slider("Fensterfläche (m2)", 10.0,50.0, 25. ,1. )
-            roof_pitch = st.slider("Dachneigung (Grad)", 0.0, 90.0, 30.0)
-            first_achse = st.selectbox("Firstachse", ("A", "B"))
+        with left:
+            st.markdown("### Eingaben")
 
-            # Berechne Grundfläche und Wandfläche
-            grundflaeche = length_a * length_b * number_of_floors
-            wandflaeche = (length_a + length_b) * room_height * number_of_floors
+            preset = st.selectbox("Gebäudestandard (Startwerte)", ["Altbau", "Teilsaniert", "Neubau", "Passivhaus"], index=1)
+            p = _preset_defaults(preset)
 
-            col2 = st.columns(1)[0]
-            col2.write("Bauteileigenschaften:")
+            with st.expander("Geometrie", expanded=True):
+                length_a = st.number_input("Länge A [m]", min_value=1.0, value=10.0, step=0.5)
+                length_b = st.number_input("Länge B [m]", min_value=1.0, value=5.0, step=0.5)
+                room_height = st.number_input("Raumhöhe [m]", min_value=2.0, value=3.0, step=0.1)
+                floors = st.number_input("Stockwerke", min_value=1, value=1, step=1)
+                window_area = st.number_input("Fensterfläche [m²]", min_value=0.0, value=25.0, step=1.0)
+                roof_pitch = st.slider("Dachneigung [°]", 0.0, 75.0, 30.0)
+                ridge_axis = st.selectbox("Firstachse", ["A", "B"], index=0)
 
-            # U-Wert Wand mit Expander
-            # col2.write("Bauteileigenschaften:")
+            with st.expander("Bauteile (U-Werte)", expanded=True):
+                u_wall = st.number_input("U Wand [W/(m²K)]", min_value=0.05, max_value=5.0, value=float(p["u_wall"]), step=0.05,
+                                         help="Typisch: Altbau ~1–2, Teilsaniert ~0.5–1, Neubau ~0.2–0.3")
+                u_window = st.number_input("U Fenster [W/(m²K)]", min_value=0.30, max_value=7.0, value=float(p["u_window"]), step=0.05,
+                                           help="Einfachverglasung ~5–6, 2-fach ~1.1–1.6, 3-fach ~0.7–1.0")
+                u_roof = st.number_input("U Dach [W/(m²K)]", min_value=0.05, max_value=5.0, value=float(p["u_roof"]), step=0.05)
+                u_floor = st.number_input("U Boden [W/(m²K)]", min_value=0.05, max_value=5.0, value=float(p["u_floor"]), step=0.05)
 
-            # Slider mit Einheit
-            u_wand = col2.slider(
-                "U-Wert Wand (W/(m²K))",
-                min_value=0.1,
-                max_value=5.0,
-                value=2.0,
-                step=0.1,
-                help="Wärmeverlust durch Wände"
+            with st.expander("Randbedingungen", expanded=True):
+                delta_t = st.slider("Temperaturdifferenz ΔT [K]", 5.0, 35.0, 20.0,
+                                    help="ΔT = T_innen − T_außen. (Numerisch gleich zu °C-Differenz.)")
+                infiltration = st.number_input("Infiltration Hᵥ [W/(m³K)]", min_value=0.0, max_value=0.30, value=float(p["infil"]), step=0.01,
+                                               help="Sehr grobes Modell für Lüftungs-/Undichtigkeitsverluste; multipliziert mit Gebäudevolumen.")
+
+        # Berechnung + Plausibilitätschecks
+        total_kW, q_infil_kW, q_hull_kW, parts, geom = calculate_heating_demand_detailed(
+            length_a, length_b, room_height, int(floors),
+            roof_pitch, ridge_axis,
+            u_wall, u_roof, u_floor,
+            infiltration, delta_t,
+            u_window, window_area
+        )
+
+        with right:
+            st.markdown("### Ergebnisse")
+
+            # Plausibilität
+            if window_area > geom["wall_area_gross"]:
+                st.error("Fensterfläche ist größer als die gesamte Wandfläche. Bitte Eingaben prüfen.")
+                st.stop()
+
+            # KPI-Kacheln
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Gesamtheizlast", f"{total_kW:.2f} kW")
+            c2.metric("Hülle", f"{q_hull_kW:.2f} kW")
+            c3.metric("Infiltration", f"{q_infil_kW:.2f} kW")
+
+            spec_W_m2 = (total_kW * 1000.0) / max(geom["floor_area_single"], 1e-6)
+            c4.metric("Spezifisch", f"{spec_W_m2:.0f} W/m²")
+
+            st.divider()
+
+            st.markdown("#### Aufschlüsselung")
+            # Bar chart ohne Infiltration doppelt in "Hülle"
+            chart_data = {k: v for k, v in parts.items()}
+            st.bar_chart(chart_data)
+
+            st.divider()
+
+            # Details kompakt
+            with st.expander("Geometrie-Details"):
+                st.write({
+                    "Grundfläche (1 Geschoss) [m²]": round(geom["floor_area_single"], 2),
+                    "Brutto-Geschossfläche [m²]": round(geom["gross_floor_area"], 2),
+                    "Volumen [m³]": round(geom["volume"], 2),
+                    "Wandfläche brutto [m²]": round(geom["wall_area_gross"], 2),
+                    "Wandfläche netto [m²]": round(geom["wall_area_net"], 2),
+                    "Dachfläche [m²]": round(geom["roof_area"], 2),
+                })
+
+            with st.expander("Hinweise"):
+                if infiltration >= 0.15:
+                    st.warning("Infiltration ist relativ hoch – das kann bei Altbau/Undichtigkeiten realistisch sein, "
+                               "führt aber zu stark steigender Heizlast. Prüfe Annahmen (Lüftung, Dichtigkeit, Volumen).")
+                if u_wall > 1.5 or u_window > 3.0:
+                    st.info("Hohe U-Werte: oft große Hebel bei Sanierung (Fassade/Fenster).")
+
+            # Download: Ergebnis JSON
+            result_payload = {
+                "inputs": {
+                    "length_a_m": length_a,
+                    "length_b_m": length_b,
+                    "room_height_m": room_height,
+                    "floors": int(floors),
+                    "roof_pitch_deg": roof_pitch,
+                    "ridge_axis": ridge_axis,
+                    "window_area_m2": window_area,
+                    "u_wall_W_m2K": u_wall,
+                    "u_window_W_m2K": u_window,
+                    "u_roof_W_m2K": u_roof,
+                    "u_floor_W_m2K": u_floor,
+                    "delta_t_K": delta_t,
+                    "infiltration_W_m3K": infiltration,
+                },
+                "geometry": geom,
+                "results_kW": {
+                    "total": total_kW,
+                    "hull": q_hull_kW,
+                    "infiltration": q_infil_kW,
+                    "parts": parts,
+                }
+            }
+            st.download_button(
+                "Ergebnis als JSON herunterladen",
+                data=str(result_payload),
+                file_name="heizlast_ergebnis.json",
+                mime="application/json"
             )
 
-            # Expander mit Informationen
-            with col2.expander("Weitere Informationen zum U-Wert der Wand"):
-                st.write("""
-                            Der U-Wert (Wärmedurchgangskoeffizient) der Wand beschreibt, wie gut die Wand Wärme abführt.
-
-                            **Typische Werte:**
-                            - Alte Gebäude: 0.5 - 3.0 W/(m²K)
-                            - Moderne Gebäude: 0.15 - 0.3 W/(m²K) (KfW-70 oder KfW-50)
-                            - Passivhäuser: < 0.1 W/(m²K)
-                            """)
-
-            # Slider mit Einheit
-            u_window = col2.slider(
-                "U-Wert Fenster (W/(m²K))",
-                min_value=0.1,
-                max_value=7.0,
-                value=6.0,
-                step=0.1,
-                help="Wärmeverlust durch Wände"
-            )
-
-            # Expander mit Informationen
-            with col2.expander("Weitere Informationen zum U-Wert der Fenster"):
-                st.write("""
-                Der U-Wert (Wärmedurchgangskoeffizient) der Wand beschreibt, wie gut die Wand Wärme abführt.
-
-                **Typische Werte:**
-                - Einfachverglasung: 5.0 - 6.0 W/(m²K)
-                - 2 fach Verglasung: 1 - 1.3 W/(m²K)
-                - 3-fach Verglasung:  0.6 - 9,8 W/(m²K)
-                """)
-
-            # U-Wert Dach mit Expander
-            u_dach = col2.slider(
-                "U-Wert Dach (W/(m²K))",
-                min_value=0.1,
-                max_value=5.0,
-                value=2.0,
-                step=0.1,
-                help="Wärmeverlust durch Dach"
-            )
-
-            with col2.expander("Weitere Informationen zum U-Wert des Dachs"):
-                st.write("""
-                Der U-Wert des Dachs beschreibt die Wärmeübertragung durch das Dach.
-
-                **Typische Werte:**
-                - Alte Gebäude: 0.5 - 3.0 W/(m²K)
-                - Moderne Gebäude: 0.15 - 0.3 W/(m²K) (KfW-70 oder KfW-50)
-                - Passivhäuser: < 0.1 W/(m²K)
-                """)
-
-            # U-Wert Boden mit Expander
-            u_boden = col2.slider(
-                "U-Wert Boden (W/(m²K))",
-                min_value=0.1,
-                max_value=5.0,
-                value=2.0,
-                step=0.1,
-                help="Wärmeverlust durch Boden"
-            )
-
-            with col2.expander("Weitere Informationen zum U-Wert des Bodens"):
-                st.write("""
-                Der U-Wert des Bodens beschreibt die Wärmeübertragung durch den Boden.
-
-                **Typische Werte:**
-                - Alte Gebäude: 0.5 - 3.0 W/(m²K)
-                - Moderne Gebäude: 0.15 - 0.3 W/(m²K) (KfW-70 oder KfW-50)
-                - Passivhäuser: < 0.1 W/(m²K)
-                """)
-
-            # Erläuterung des Infiltrationsfaktors in der UI
-
-            col3 = st.columns(1)[0]
-            col3.write("Weitere Parameter:")
-
-            # Slider mit Einheit
-            infiltration_factor = col3.slider(
-                "Infiltrationsfaktor (W/(m³·K))",
-                min_value=0.01,
-                max_value=0.3,
-                value=0.25,
-                step=0.01,
-                help="Beschreibt den Wärmeverlust durch Luftdurchtritt durch die Gebäudehülle"
-            )
-
-            # Option 1: Hilfetext direkt unter dem Slider
-            with col3.expander("Informationen zum Infiltrationsfaktor"):
-                st.write("""
-                Der Infiltrationsfaktor beschreibt den Wärmeverlust durch Luftdurchtritt durch die Gebäudehülle.
-
-                **Typische Werte:**
-                - Alte Gebäude (Schlechte Dichtigkeit): 0.1 - 0.3 W/(m³·K)
-                - Moderne Gebäude (Gute Dichtigkeit): 0.02 - 0.05 W/(m³·K)
-                - Passivhäuser (Sehr gute Dichtigkeit): < 0.01 W/(m³·K)
-                """)
-
-            delta_t = col3.slider("Temperaturdifferenz (°C)", 5.0, 30.0, 20.0)
-
-            submitted = st.form_submit_button("Heizlast berechnen")
-
-            if submitted:
-                # Berechne Gebäudevolumen
-                volume = grundflaeche * room_height
-
-                u_values = {"Wand": u_wand, "Dach": u_dach, "Boden": u_boden}
-                areas = {"Wand": wandflaeche, "Dach": grundflaeche, "Boden": grundflaeche}
-
-                #heating_demand, q_hull, q_infiltration, q_internal = calculate_heating_demand_detailed(
-                #    volume, delta_t, u_values, areas, infiltration_factor
-                #)
-
-                total_heat_loss, heat_loss_infiltration, heat_loss_hull, areas = calculate_heating_demand_detailed(
-                    length_a, length_b, room_height, number_of_floors,
-                    roof_pitch, first_achse, u_wand, u_dach, u_boden,
-                    infiltration_factor, delta_t, u_window, area_window
-                )
-
-                st.write(f"Grundfläche: {areas['Grundfläche']:.2f} m²")
-                st.write(f"Dachfläche: {areas['Dachfläche']:.2f} m²")
-                st.write(f"Wandfläche: {areas['Wandfläche']:.2f} m²")
-                st.write(f"Gesamtwärmeverlust: {total_heat_loss:.2f} kW")
-
-                # Berechne Wärmeverlust pro m² Grundfläche
-                wärmeverlust_pro_m2 = total_heat_loss / grundflaeche
-
-                st.success(f"Gesamtheizlast: {total_heat_loss:.2f} kW")
-                st.info(f"Wärmeverlust pro m² Grundfläche: {wärmeverlust_pro_m2:.2f} kW/m²")
-
-                st.subheader("Gebäudemesswerte:")
-                st.write(f"Grundfläche: {grundflaeche:.2f} m²")
-                st.write(f"Gebäudevolumen: {volume:.2f} m³")
-                st.write(f"Wandfläche: {wandflaeche:.2f} m²")
-                st.write(f"Zahl der Stockwerke: {number_of_floors}")
-
-                st.subheader("Aufschlüsselung der Heizlast:")
-                st.write(f"- Wärmeverlust durch Gebäudehülle: {heat_loss_hull:.2f} kW")
-                st.write(f"- Lüftungsverlust: {heat_loss_infiltration:.2f} kW")
-                #st.write(f"- Innere Wärmegewinne: {q_internal:.2f} kW")
-
-                st.subheader("Empfehlungen:")
-                if heat_loss_hull > 1.0:
-                    st.warning("Hoher Wärmeverlust durch Gebäudehülle. Überlegen Sie einer energetischen Sanierung.")
-                if infiltration_factor > 3.0:
-                    st.warning("Hoher Infiltrationsfaktor. Prüfen Sie die Dichtigkeit des Gebäudes.")
-
+    # -----------------------------
+    # TAB 2: Einfacher Überschlag
+    # -----------------------------
     with tab2:
-        st.header("Einfache Erfahrungsberechnung")
-        st.write("Berechnung basierend auf Gebäudevolumen und Wärmeverlustfaktor")
+        st.subheader("Einfache Überschlagung über Volumen")
 
-        # Eingaben für Grundfläche und Raumhöhe
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            grundflaeche = st.slider("Grundfläche (m²)", 10.0, 500.0, 100.0)
-        with col2:
-            raumhoehe = st.slider("Raumhöhe (m)", 2.0, 10.0, 3.0)
+        left, right = st.columns([1.05, 1.4], gap="large")
 
-        # Berechne Gebäudevolumen
-        volume_simple = grundflaeche * raumhoehe
+        with left:
+            st.markdown("### Eingaben")
+            with st.expander("Geometrie", expanded=True):
+                floor_area = st.number_input("Grundfläche [m²]", min_value=10.0, max_value=1000.0, value=100.0, step=5.0)
+                room_height_simple = st.number_input("Raumhöhe [m]", min_value=2.0, max_value=10.0, value=3.0, step=0.1)
+                floors_simple = st.number_input("Stockwerke", min_value=1, max_value=20, value=1, step=1)
+                volume_simple = floor_area * room_height_simple * int(floors_simple)
 
-        # Einfache Berechnung mit Formular
-        with st.form(key='simple_form'):
-            col1 = st.columns(1)[0]
-
-            # Wärmeverlustfaktor mit Expander
-            heat_loss_factor_simple = col1.slider(
-                "Wärmeverlustfaktor (W/m³K)",
-                min_value=0.01,
-                max_value=2.0,
-                value=1.5,
-                step=0.1,
-                help="Wärmeverlust durch volumetrischen Wärmehaushalt"
-            )
-
-            with col1.expander("Weitere Informationen zum Wärmeverlustfaktor"):
-                st.write("""
-                Der Wärmeverlustfaktor beschreibt den Wärmeverlust pro Raumvolumen und Temperaturdifferenz.
-
-                **Typische Werte:**
-                - Alte Gebäude: 1 - 1.5 W/m³K
-                - Moderne Gebäude: 0.3- 0.8 W/m³K
-                - Passivhäuser: < 0.15 - 0.25 W/m³K
-
-                Erhöhter Wärmeverlust kann auf folgende Faktoren hindeuten:
-                - Nicht gedämte Fenster
-                - Undichte Gebäudehülle
-                - Alte Isolierglasscheiben
-                - Ineffiziente Heiztechnik
-                """)
-
-
-            delta_t_simple = col1.slider("Temperaturdifferenz (°C)", 5.0, 30.0, 15.0)
-
-            submitted_simple = st.form_submit_button("Heizlast berechnen")
-
-            if submitted_simple:
-                heating_demand_simple = calculate_heating_demand(
-                    volume_simple, heat_loss_factor_simple, delta_t_simple
+            with st.expander("Wärmeverlustfaktor", expanded=True):
+                heat_loss_factor = st.slider(
+                    "Wärmeverlustfaktor H [W/(m³K)]",
+                    min_value=0.05, max_value=2.0, value=1.0, step=0.05,
+                    help="Grobe Erfahrungswerte: Altbau ~1.0–1.5; modern ~0.3–0.8; Passivhaus ~0.15–0.25"
                 )
 
-                # Wärmeverlust pro m² Grundfläche
-                wärmeverlust_pro_m2 = heating_demand_simple / grundflaeche
+            delta_t_simple = st.slider("Temperaturdifferenz ΔT [K]", 5.0, 35.0, 15.0)
 
-                st.success(f"Gesamtheizlast: {heating_demand_simple:.2f} kW")
-                st.info(f"Wärmeverlust pro m² Grundfläche: {wärmeverlust_pro_m2:.2f} kW / m2")
+        with right:
+            st.markdown("### Ergebnis")
+            q_simple_kW = calculate_heating_demand(volume_simple, heat_loss_factor, delta_t_simple)
 
-                st.write(
-                    f"Mit einem Wärmeverlustfaktor von {heat_loss_factor_simple} W/(m³K) und einer Temperaturdifferenz von {delta_t_simple}°C beträgt die Heizlast {heating_demand_simple * 1000:.0f} W.")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Volumen", f"{volume_simple:.0f} m³")
+            c2.metric("Heizlast", f"{q_simple_kW:.2f} kW")
+            spec_W_m2_simple = (q_simple_kW * 1000.0) / max(floor_area, 1e-6)
+            c3.metric("Spezifisch", f"{spec_W_m2_simple:.0f} W/m²")
 
-                st.write(
-                    "Hinweis: Dieser Wert kann als grober Schätzwert für die Heizlast dienen. Eine detaillierte Berechnung sollte für genauere Ergebnisse verwendet werden.")
+            st.divider()
+
+            st.write(
+                f"Mit H = {heat_loss_factor:.2f} W/(m³K) und ΔT = {delta_t_simple:.1f} K ergibt sich "
+                f"Q ≈ {q_simple_kW*1000:.0f} W."
+            )
+            st.info("Hinweis: Das ist eine grobe Abschätzung. Für Planung/Anlagenauslegung ist die detaillierte Betrachtung sinnvoll.")
+
+            st.divider()
+            with st.expander("Typische Richtwerte (Daumenregeln)"):
+                st.write({
+                    "Altbau (unsaniert)": "H ≈ 1.0–1.5 W/(m³K)",
+                    "Teilsaniert": "H ≈ 0.6–1.0 W/(m³K)",
+                    "Neubau": "H ≈ 0.3–0.8 W/(m³K)",
+                    "Passivhaus": "H ≈ 0.15–0.25 W/(m³K)",
+                })
 
 
 if __name__ == "__main__":
