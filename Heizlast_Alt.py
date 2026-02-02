@@ -84,11 +84,11 @@ def main():
             col1 = st.columns(1)[0]
 
             col1.write("Raumdimensionen:")
-            length_a = col1.slider("Länge A (m)", 2.0, 20.0, 5.0)
+            length_a = col1.slider("Länge A (m)", 2.0, 20.0, 10.0)
             length_b = col1.slider("Länge B (m)", 2.0, 20.0, 5.0)
             room_height = col1.slider("Raumhöhe (m)", 2.0, 10.0, 3.0)
-            number_of_floors = col1.slider("Zahl der Stockwerke", 1, 10, 1)
-            area_window = col1.slider("Fensterfläche (m2)", 10.0,50.0, 15. ,1. )
+            number_of_floors = col1.slider("Zahl der Stockwerke", 2, 10, 1)
+            area_window = col1.slider("Fensterfläche (m2)", 10.0,50.0, 25. ,1. )
             roof_pitch = st.slider("Dachneigung (Grad)", 0.0, 90.0, 30.0)
             first_achse = st.selectbox("Firstachse", ("A", "B"))
 
@@ -107,7 +107,7 @@ def main():
                 "U-Wert Wand (W/(m²K))",
                 min_value=0.1,
                 max_value=5.0,
-                value=0.3,
+                value=2.0,
                 step=0.1,
                 help="Wärmeverlust durch Wände"
             )
@@ -149,7 +149,7 @@ def main():
                 "U-Wert Dach (W/(m²K))",
                 min_value=0.1,
                 max_value=5.0,
-                value=0.3,
+                value=2.0,
                 step=0.1,
                 help="Wärmeverlust durch Dach"
             )
@@ -169,7 +169,7 @@ def main():
                 "U-Wert Boden (W/(m²K))",
                 min_value=0.1,
                 max_value=5.0,
-                value=0.3,
+                value=2.0,
                 step=0.1,
                 help="Wärmeverlust durch Boden"
             )
@@ -194,7 +194,7 @@ def main():
                 "Infiltrationsfaktor (W/(m³·K))",
                 min_value=0.01,
                 max_value=0.3,
-                value=0.05,
+                value=0.25,
                 step=0.01,
                 help="Beschreibt den Wärmeverlust durch Luftdurchtritt durch die Gebäudehülle"
             )
@@ -304,7 +304,7 @@ def main():
                 """)
 
 
-            delta_t_simple = col1.slider("Temperaturdifferenz (°C)", 5.0, 30.0, 20.0)
+            delta_t_simple = col1.slider("Temperaturdifferenz (°C)", 5.0, 30.0, 15.0)
 
             submitted_simple = st.form_submit_button("Heizlast berechnen")
 
